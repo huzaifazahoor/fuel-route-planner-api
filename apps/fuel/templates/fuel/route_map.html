@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>Fuel route map</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <style>
+        body {
+            margin: 0;
+            font-family: system-ui, sans-serif;
+        }
+
+        header {
+            padding: 12px 16px;
+            background: #1f2937;
+            color: #fff;
+        }
+
+        header h1 {
+            margin: 0 0 4px;
+            font-size: 18px;
+        }
+
+        header p {
+            margin: 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        #map {
+            height: calc(100vh - 64px);
+        }
+
+        .error {
+            padding: 24px;
+            color: #b91c1c;
+        }
+    </style>
+</head>
+
+<body>
+    {% if error %}
+    <div class="error">
+        <h2>Could not plan this trip</h2>
+        <pre>{{ error }}</pre>
+    </div>
+    {% else %}
+    <header>
+        <h1>{{ plan.start.name }} to {{ plan.finish.name }}</h1>
+        <p>{{ plan.total_miles }} miles, {{ plan.stops|length }} fuel stops,
+            {{ plan.total_gallons_bought }} gallons, total fuel cost ${{ plan.total_fuel_cost }}</p>
+    </header>
+    <div id="map"></div>
+    {{ plan|json_script:"plan-data" }}
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+    <script>
+        const plan = JSON.parse(document.getElementById("plan-data").textContent);
+        const map = L.map("map");
+        L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            maxZoom: 18,
+            attribution: "&copy; OpenStreetMap contributors",
+        }).addTo(map);
+
+        // GeoJSON is [lng, lat]; Leaflet wants [lat, lng].
+        const line = plan.route.coordinates.map(([lng, lat]) => [lat, lng]);
+        const route = L.polyline(line, { color: "#2563eb", weight: 4 }).addTo(map);
+        map.fitBounds(route.getBounds(), { padding: [20, 20] });
+
+        L.circleMarker([plan.start.lat, plan.start.lng], { radius: 8, color: "#16a34a" })
+            .addTo(map).bindPopup(`<b>Start</b><br>${plan.start.name}`);
+        L.circleMarker([plan.finish.lat, plan.finish.lng], { radius: 8, color: "#dc2626" })
+            .addTo(map).bindPopup(`<b>Finish</b><br>${plan.finish.name}`);
+
+        plan.stops.forEach((stop, i) => {
+            L.marker([stop.lat, stop.lng]).addTo(map).bindPopup(
+                `<b>Stop ${i + 1}: ${stop.name}</b><br>` +
+                `${stop.city}, ${stop.state} (mile ${stop.mile_marker})<br>` +
+                `$${stop.price_per_gallon}/gal, ${stop.gallons} gal, $${stop.cost}`
+            );
+        });
+    </script>
+    {% endif %}
+</body>
+
+</html>

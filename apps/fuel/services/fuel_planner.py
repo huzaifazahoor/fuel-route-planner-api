@@ -7,7 +7,7 @@ from apps.fuel.services.stations import haversine_miles, stations_near
 MPG = 10
 TANK_GALLONS = 50  # 500 miles of range at 10 mpg
 MAX_OFF_ROUTE_MILES = 10
-START_RADIUS_MILES = 15  # stations this close to the start count as "at the start"
+START_RADIUS_MILES = 50  # stations this close to the start count as "at the start"
 
 
 @dataclass
@@ -15,6 +15,7 @@ class Candidate:
     station: object
     mile: float  # mile marker along the route
     off_route_miles: float
+    real_mile: float = 0.0  # true mile marker, for display
 
 
 def cumulative_miles(points):
@@ -29,10 +30,11 @@ def route_candidates(points):
     miles = cumulative_miles(points)
     candidates = []
     for near in stations_near(points, max_miles=MAX_OFF_ROUTE_MILES):
+        real_mile = miles[near.point_index]
         mile = miles[near.point_index]
         if mile <= START_RADIUS_MILES:
             mile = 0.0
-        candidates.append(Candidate(near.station, mile, near.distance_miles))
+        candidates.append(Candidate(near.station, mile, near.distance_miles, real_mile))
     candidates.sort(key=lambda c: c.mile)
     return candidates, miles[-1]
 
@@ -58,6 +60,30 @@ def choose_stops(
     else:
         current = None
 
+    before_first_stop = None
+    if current is None and not any(c.mile <= fuel * mpg for c in candidates):
+        first_mile = next((c.mile for c in candidates if c.mile <= max_range), None)
+        first = (
+            None
+            if first_mile is None
+            else min(
+                (c for c in candidates if c.mile <= first_mile + 30),
+                key=lambda c: c.station.price,
+            )
+        )
+        if first is None:
+            raise PlanningError(
+                f"No fuel station within {max_range} miles of the start."
+            )
+        extra = first.mile / mpg - fuel
+        fuel += extra
+        before_first_stop = {
+            "gallons": round(extra, 2),
+            "price_per_gallon": round(first.station.price, 3),
+            "cost": round(extra * first.station.price, 2),
+            "note": "No station near the start, so this fuel is priced at the first stop.",
+        }
+
     while True:
         if current is None:
             # Not at a station: drive on the fuel we have.
@@ -70,8 +96,7 @@ def choose_stops(
                     "No fuel station in reach from the start. "
                     "Try a higher start_fuel_gallons."
                 )
-            far = [c for c in ahead if c.mile >= position + 200] or ahead
-            nxt = min(far, key=lambda c: (c.station.price, -c.mile))
+            nxt = min(ahead, key=lambda c: (c.station.price, -c.mile))
             fuel -= (nxt.mile - position) / mpg
             position, current = nxt.mile, nxt
             continue
@@ -84,7 +109,7 @@ def choose_stops(
         ahead = [
             c for c in candidates if position < c.mile <= min(full_reach, total_miles)
         ]
-        cheaper = next((c for c in ahead if c.station.price < price), None)
+        cheaper = next((c for c in ahead if c.station.price <= price - 0.10), None)
 
         if cheaper is not None:
             # Buy just enough to reach the cheaper station.
@@ -100,7 +125,11 @@ def choose_stops(
                 raise PlanningError(
                     f"No fuel station within {max_range} miles after mile {position:.0f}."
                 )
-            nxt = min(ahead, key=lambda c: (c.station.price, -c.mile))
+            far = [c for c in ahead if c.mile >= position + 200]
+            if far:
+                nxt = min(far, key=lambda c: (c.station.price, -c.mile))
+            else:
+                nxt = max(ahead, key=lambda c: c.mile)  # stop as late as possible
             target = full_reach  # "fill the tank"
 
         needed = (target - position) / mpg
@@ -114,11 +143,16 @@ def choose_stops(
         fuel -= (nxt.mile - position) / mpg
         position, current = nxt.mile, nxt
 
-    total_cost = sum(stop["cost"] for stop in stops)
+    extra_cost = before_first_stop["cost"] if before_first_stop else 0
+    extra_gallons = before_first_stop["gallons"] if before_first_stop else 0
+
+    total_cost = sum(stop["cost"] for stop in stops) + extra_cost
+    total_gallons = sum(stop["gallons"] for stop in stops) + extra_gallons
     return {
         "total_miles": round(total_miles, 1),
-        "total_gallons_bought": round(sum(s["gallons"] for s in stops), 2),
+        "total_gallons_bought": round(total_gallons, 2),
         "total_fuel_cost": round(total_cost, 2),
+        "fuel_before_first_stop": before_first_stop,
         "stops": stops,
     }
 
@@ -133,7 +167,7 @@ def _stop(candidate, gallons):
         "state": s.state,
         "lat": s.lat,
         "lng": s.lng,
-        "mile_marker": round(candidate.mile, 1),
+        "mile_marker": round(candidate.real_mile, 1),
         "off_route_miles": round(candidate.off_route_miles, 1),
         "price_per_gallon": round(s.price, 3),
         "gallons": round(gallons, 2),
